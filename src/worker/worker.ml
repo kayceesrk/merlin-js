@@ -219,6 +219,12 @@ let on_message = function
       Protocol.Completions { from = 0; to_ = 0; entries = []; }
     end
   | Type_enclosing (source, position) ->
+    (* Re-scan [/static/cmis/] before each Type_enclosing query so any
+       cmi files an extension bundle wrote into the pseudo-fs become
+       visible to merlin. The host's [Topdirs.dir_directory] call only
+       refreshes Toploop's Load_path; merlin maintains a separate
+       cache. *)
+    (try reset_dirs () with _ -> ());
     let source = Msource.make source in
     let query = Query_protocol.Type_enclosing (None, position, None) in
     Protocol.Typed_enclosings (dispatch source query)
