@@ -3,6 +3,17 @@ open Std
 open Merlin_kernel
 module Location = Ocaml_parsing.Location
 
+(* Match the in-browser toplevel (eval.ml), which enables OxCaml's
+   "alpha" extension universe. The toplevel and merlin use separate
+   compiler-libs in the same worker process, so merlin needs its own
+   enable. Without it merlin cannot typecheck mode annotations or a
+   mode-ascribed [module M : Sig], so [open M] exposes nothing typed
+   and type-on-hover/completion go blank for every cell that uses
+   such a module's interface. *)
+let () =
+  Ocaml_parsing.Language_extension.set_universe_and_enable_all_of_string_exn
+    "alpha"
+
 let stdlib_path = "/static/cmis"
 
 let sync_get url =
@@ -208,7 +219,7 @@ let dump () =
     Mconfig.dump (Mpipeline.final_config pipeline)
     |> Json.pretty_to_string *)
 
-let on_message = function
+let on_message_exn = function
   | Protocol.Complete_prefix (source, position) ->
     let source = Msource.make source in
     begin match Completion.at_pos source position with
@@ -258,6 +269,30 @@ let on_message = function
     Protocol.Errors errors
   | Add_cmis cmis ->
     add_cmis cmis
+
+(* The host pairs answers with queries by ORDER (a per-cell FIFO of
+   futures). A query that raises and never answers leaves a dangling
+   future at the head of that cell's queue: every later answer then
+   resolves the wrong future and the real one never fires (the
+   type-on-hover silently dies for that cell). So: never fail to
+   respond. On any exception, return a well-typed default for the
+   action. *)
+(* The host pairs answers with queries by ORDER (a per-cell FIFO of
+   futures). A query that raises and never answers leaves a dangling
+   future at the head of that cell's queue: every later answer then
+   resolves the wrong future and the real one never fires (lint and
+   type-on-hover silently die for that cell). So: never fail to
+   respond. On any exception, return a well-typed empty answer for
+   the action. *)
+let on_message action =
+  try on_message_exn action
+  with _exn ->
+    (match action with
+     | Protocol.Complete_prefix _ ->
+       Protocol.Completions { from = 0; to_ = 0; entries = [] }
+     | Type_enclosing _ -> Protocol.Typed_enclosings []
+     | All_errors _ -> Protocol.Errors []
+     | Add_cmis _ -> Protocol.Added_cmis)
 
 let run () =
   Js_of_ocaml.Worker.set_onmessage @@ fun marshaled_message ->
