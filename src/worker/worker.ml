@@ -206,7 +206,7 @@ let dump () =
     Mconfig.dump (Mpipeline.final_config pipeline)
     |> Json.pretty_to_string *)
 
-let on_message = function
+let on_message_exn = function
   | Protocol.Complete_prefix (source, position) ->
     let source = Msource.make source in
     begin match Completion.at_pos source position with
@@ -250,6 +250,23 @@ let on_message = function
     Protocol.Errors errors
   | Add_cmis cmis ->
     add_cmis cmis
+
+(* The host pairs answers with queries by ORDER (a per-cell FIFO of
+   futures). A query that raises and never answers leaves a dangling
+   future at the head of that cell's queue: every later answer then
+   resolves the wrong future and the real one never fires (lint and
+   type-on-hover silently die for that cell). So: never fail to
+   respond. On any exception, return a well-typed empty answer for
+   the action. *)
+let on_message action =
+  try on_message_exn action
+  with _exn ->
+    (match action with
+     | Protocol.Complete_prefix _ ->
+       Protocol.Completions { from = 0; to_ = 0; entries = [] }
+     | Type_enclosing _ -> Protocol.Typed_enclosings []
+     | All_errors _ -> Protocol.Errors []
+     | Add_cmis _ -> Protocol.Added_cmis)
 
 let run () =
   Js_of_ocaml.Worker.set_onmessage @@ fun marshaled_message ->
